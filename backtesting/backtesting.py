@@ -68,11 +68,10 @@ class Strategy(metaclass=ABCMeta):
     def _check_params(self, params):
         for k, v in params.items():
             if not hasattr(self, k):
-                message = f"Strategy '{self.__class__.__name__}' is missing parameter '{k}'."
+                message = f"Strategy '{self.__class__.__name__}' is missing parameter '{k}', set from config!."
                 print(message)
                 # raise AttributeError(message)
-            else:
-                setattr(self, k, v)
+            setattr(self, k, v)
         return params
 
     def I(self,  # noqa: E741, E743
@@ -1245,6 +1244,7 @@ class Backtest:
                  constraint: Callable[[dict], bool] = None,
                  return_heatmap: bool = False,
                  return_optimization: bool = False,
+                 return_multiple_results: int = False,
                  random_state: int = None,
                  **kwargs) -> Union[pd.Series,
                                     Tuple[pd.Series, pd.Series],
@@ -1426,18 +1426,35 @@ class Backtest:
             finally:
                 del Backtest._mp_backtests[backtest_uuid]
 
-            best_params = heatmap.idxmax()
+            if return_multiple_results:
+                # NEW Find the best parameters and get the best results
+                best_params_set = heatmap.nlargest(min(return_multiple_results, len(heatmap)))
+                stats = []
+                for best_params, value in best_params_set.items():
+                    if pd.isnull(best_params):
+                        # No trade was made in any of the runs. Just make a random
+                        # run so we get some, if empty, results
+                        stats.append(self.run(**param_combos[0]))
+                    else:
+                        stats.append(self.run(**dict(zip(heatmap.index.names, best_params))))
 
-            if pd.isnull(best_params):
-                # No trade was made in any of the runs. Just make a random
-                # run so we get some, if empty, results
-                stats = self.run(**param_combos[0])
+                if return_heatmap:
+                    return stats, heatmap
+                return stats
             else:
-                stats = self.run(**dict(zip(heatmap.index.names, best_params)))
+                # ORIGINAL Find the best parameters and get the best results
+                best_params = heatmap.idxmax()
 
-            if return_heatmap:
-                return stats, heatmap
-            return stats
+                if pd.isnull(best_params):
+                    # No trade was made in any of the runs. Just make a random
+                    # run so we get some, if empty, results
+                    stats = self.run(**param_combos[0])
+                else:
+                    stats = self.run(**dict(zip(heatmap.index.names, best_params)))
+
+                if return_heatmap:
+                    return stats, heatmap
+                return stats
 
         def _optimize_skopt() -> Union[pd.Series,
                                        Tuple[pd.Series, pd.Series],
@@ -1652,3 +1669,4 @@ class Backtest:
             reverse_indicators=reverse_indicators,
             show_legend=show_legend,
             open_browser=open_browser)
+
