@@ -990,7 +990,8 @@ class _Broker:
                 # If order size was specified proportionally,
                 # precompute true size in units, accounting for margin and spread/commissions
                 # if -1 < size < 1:
-                size = copysign(float((self._leverage * abs(size)) / adjusted_price_plus_commission), size)
+                size = real_size
+                # size = copysign(float((self._leverage * abs(size)) / adjusted_price_plus_commission), size)
                 if size == 0:
                     self.orders.remove(order)
                     continue
