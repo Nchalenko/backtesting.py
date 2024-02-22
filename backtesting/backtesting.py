@@ -1111,7 +1111,8 @@ class _Broker:
         # Convert seconds to hours
         hours = total_seconds / 3600
         
-        margin_interest = self._calculate_margin_interest(self._data.symbol, trade.size * trade.entry_time, hours)
+        margin_interest = self._calculate_margin_interest('test', trade.size * trade.entry_time, hours)
+        # margin_interest = self._calculate_margin_interest(self._data.symbol, trade.size * trade.entry_time, hours)
 
         self.closed_trades.append(closed_trade)
         # Apply commission one more time at trade exit
