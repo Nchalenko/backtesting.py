@@ -88,6 +88,7 @@ def compute_stats(
         trades_df['Duration'] = trades_df['ExitTime'] - trades_df['EntryTime']
         commissions = sum(t._commissions for t in trades)
         margin_interests = sum(t._margin_interest for t in trades)
+        volume = sum(t.entry_price * abs(t.size) for t in trades)
 
     del trades
 
@@ -119,6 +120,9 @@ def compute_stats(
         
     if margin_interests:
         s.loc['Margin Interest [$]'] = margin_interests
+        
+    if volume:
+        s.loc['Volume [$]'] = volume
 
     s.loc['Return [%]'] = (equity[-1] - equity[0]) / equity[0] * 100
     c = ohlc_data.Close.values
