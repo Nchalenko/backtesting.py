@@ -1110,8 +1110,8 @@ class _Broker:
         total_seconds = duration.total_seconds()
         # Convert seconds to hours
         hours = abs(total_seconds / 3600)
-
-        margin_interest = self._calculate_margin_interest('test', self._cash - trade.size * trade.entry_price, hours)
+        borrowed_amount = self._cash - abs(trade.size * trade.entry_price)
+        margin_interest = self._calculate_margin_interest('test', borrowed_amount, hours)
         # margin_interest = self._calculate_margin_interest(self._data.symbol, trade.size * trade.entry_time, hours)
 
         self.closed_trades.append(closed_trade)
