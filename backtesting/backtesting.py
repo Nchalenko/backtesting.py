@@ -785,7 +785,8 @@ class _Broker:
         tp = tp and float(tp)
 
         is_long = size > 0
-        adjusted_price = self._adjusted_price(size)
+        adjusted_price = self.last_price
+        # adjusted_price = self._adjusted_price(size)
 
         if is_long:
             if not (sl or -np.inf) < (limit or stop or adjusted_price) < (tp or np.inf):
@@ -976,13 +977,18 @@ class _Broker:
 
             # Adjust price to include commission (or bid-ask spread).
             # In long positions, the adjusted price is a fraction higher, and vice versa.
-            adjusted_price = self._adjusted_price(order.size, price)
+            adjusted_price = price
+            # adjusted_price = self._adjusted_price(order.size, price)
+            order_commission = self._commission(order.size, price)
             adjusted_price_plus_commission = adjusted_price + self._commission(order.size, price)
             
             try:
+                size = order.size
+                real_size = copysign(float(abs(order.size) / adjusted_price * self._leverage), size)
+                order_real_commission = self._commission(order.size, price)
+                
                 # If order size was specified proportionally,
                 # precompute true size in units, accounting for margin and spread/commissions
-                size = order.size
                 # if -1 < size < 1:
                 size = copysign(float((self._leverage * abs(size)) / adjusted_price_plus_commission), size)
                 if size == 0:
