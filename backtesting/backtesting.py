@@ -1112,7 +1112,7 @@ class _Broker:
         hours = abs(total_seconds / 3600)
         entry_amount_usd = abs(trade.size * trade.entry_price)
         borrowed_amount = entry_amount_usd - self._cash if self._cash < entry_amount_usd else 0
-        margin_interest = self._calculate_margin_interest('test', borrowed_amount, hours)
+        margin_interest = self._calculate_margin_interest('test', borrowed_amount, hours, trade.size > 0)
         # margin_interest = self._calculate_margin_interest(self._data.symbol, trade.size * trade.entry_time, hours)
 
         self.closed_trades.append(closed_trade)
@@ -1143,12 +1143,15 @@ class _Broker:
             trade.sl = sl
 
 
-    def _calculate_margin_interest(self, symbol: str, borrowed_amount: float, hours_held: int) -> float: # for margin trades
+    def _calculate_margin_interest(self, symbol: str, borrowed_amount: float, hours_held: int, is_long: bool) -> float: # for margin trades
         """ 
         Calculate the interest on borrowed funds for margin trading, based on the symbol.
         """
         # hourly_rate = self.get_borrow_rate(symbol)
-        hourly_rate = 0.00436408 # usdt
+    
+        # usdt/btc
+        # todo use symbol here
+        hourly_rate = 0.00436408 if is_long else 0.00013629 
         return abs(borrowed_amount * hourly_rate * hours_held)
 
 class Backtest:
