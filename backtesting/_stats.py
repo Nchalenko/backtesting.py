@@ -74,7 +74,7 @@ def compute_stats(
             'EntryPrice': [t.entry_price for t in trades],
             'ExitPrice': [t.exit_price for t in trades],
             'Commissions': [t._commissions for t in trades],
-            'Margin Interest': [t._margin_interest for t in trades],
+            'MarginInterest': [t._margin_interest for t in trades],
             'PnL': [t.pl for t in trades],
             'ReturnPct': [t.pl_pct for t in trades],
             'EntryTime': [t.entry_time for t in trades],
@@ -116,6 +116,9 @@ def compute_stats(
 
     if commissions:
         s.loc['Commissions [$]'] = commissions
+        
+    if margin_interests:
+        s.loc['Margin Interest [$]'] = margin_interests
 
     s.loc['Return [%]'] = (equity[-1] - equity[0]) / equity[0] * 100
     c = ohlc_data.Close.values
