@@ -544,8 +544,9 @@ class Trade:
         self.__tp_order: Optional[Order] = None
         self.__open_indicator: Optional[str] = None
         self.__close_indicator: Optional[str] = None
-        self.__tag = tag
-        self._commissions = 0
+        self.__tag : Optional[str] = tag
+        self._commissions : Optional[float] = 0
+        self._margin_interest : Optional[float] = 0
 
 
     def set_open_indicator(self, open_indicator: str):
@@ -1104,15 +1105,24 @@ class _Broker:
             self.orders.remove(trade._tp_order)
 
         closed_trade = trade._replace(exit_price=price, exit_bar=time_index)
+
+        duration = trade.entry_time - trade.exit_time
+        total_seconds = duration.total_seconds()
+        # Convert seconds to hours
+        hours = total_seconds / 3600
+        
+        margin_interest = self._calculate_margin_interest(self._data.symbol, trade.size * trade.entry_time, hours)
+
         self.closed_trades.append(closed_trade)
         # Apply commission one more time at trade exit
         commission = self._commission(trade.size, price)
-        self._cash += trade.pl - commission
+        self._cash += trade.pl - commission - margin_interest
         # Save commissions on Trade instance for stats
         trade_open_commission = self._commission(closed_trade.size, closed_trade.entry_price)
         # applied here instead of on Trade open because size could have changed
         # by way of _reduce_trade()
         closed_trade._commissions = commission + trade_open_commission
+        closed_trade._margin_interest = margin_interest
 
     def _open_trade(self, price: float, size: int, sl: Optional[float], tp: Optional[float], time_index: int, indicator: str = None, tag = None):
         trade = Trade(self, size, price, time_index, tag)
@@ -1130,6 +1140,14 @@ class _Broker:
         if sl:
             trade.sl = sl
 
+
+    def _calculate_margin_interest(self, symbol: str, borrowed_amount: float, hours_held: int) -> float: # for margin trades
+        """ 
+        Calculate the interest on borrowed funds for margin trading, based on the symbol.
+        """
+        # hourly_rate = self.get_borrow_rate(symbol)
+        hourly_rate = 0.00436408 # usdt
+        return abs(borrowed_amount * hourly_rate * hours_held)
 
 class Backtest:
     """

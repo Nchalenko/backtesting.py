@@ -74,6 +74,7 @@ def compute_stats(
             'EntryPrice': [t.entry_price for t in trades],
             'ExitPrice': [t.exit_price for t in trades],
             'Commissions': [t._commissions for t in trades],
+            'Margin Interest': [t._margin_interest for t in trades],
             'PnL': [t.pl for t in trades],
             'ReturnPct': [t.pl_pct for t in trades],
             'EntryTime': [t.entry_time for t in trades],
@@ -86,6 +87,7 @@ def compute_stats(
         })
         trades_df['Duration'] = trades_df['ExitTime'] - trades_df['EntryTime']
         commissions = sum(t._commissions for t in trades)
+        margin_interests = sum(t._margin_interest for t in trades)
 
     del trades
 
