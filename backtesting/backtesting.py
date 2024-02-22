@@ -1033,7 +1033,8 @@ class _Broker:
                         break
 
             # If we don't have enough liquidity to cover for the order, the broker CANCELS it
-            if abs(need_size) * adjusted_price_plus_commission > self.margin_available * self._leverage:
+            if abs(need_size) * adjusted_price > self.margin_available * self._leverage:
+            # if abs(need_size) * adjusted_price_plus_commission > self.margin_available * self._leverage:
                 self.orders.remove(order)
                 continue
 
