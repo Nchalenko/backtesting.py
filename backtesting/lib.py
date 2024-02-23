@@ -48,6 +48,7 @@ TRADES_AGG = OrderedDict((
     ('EntryPrice', 'mean'),
     ('ExitPrice', 'mean'),
     ('PnL', 'sum'),
+    ('Commissions', 'sum'),
     ('ReturnPct', 'mean'),
     ('EntryTime', 'first'),
     ('ExitTime', 'last'),

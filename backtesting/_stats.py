@@ -64,6 +64,7 @@ def compute_stats(
 
     if isinstance(trades, pd.DataFrame):
         trades_df: pd.DataFrame = trades
+        commissions = None  # Not shown
     else:
         # Came straight from Backtest.run()
         trades_df = pd.DataFrame({
@@ -72,6 +73,8 @@ def compute_stats(
             'ExitBar': [t.exit_bar for t in trades],
             'EntryPrice': [t.entry_price for t in trades],
             'ExitPrice': [t.exit_price for t in trades],
+            'Commissions': [t._commissions for t in trades],
+            'MarginInterest': [t._margin_interest for t in trades],
             'PnL': [t.pl for t in trades],
             'ReturnPct': [t.pl_pct for t in trades],
             'EntryTime': [t.entry_time for t in trades],
@@ -83,6 +86,10 @@ def compute_stats(
             'Tag': [t.tag for t in trades],
         })
         trades_df['Duration'] = trades_df['ExitTime'] - trades_df['EntryTime']
+        commissions = sum(t._commissions for t in trades)
+        margin_interests = sum(t._margin_interest for t in trades)
+        volume = sum(t.entry_price * abs(t.size) for t in trades)
+
     del trades
 
     pl = trades_df['PnL']
@@ -107,6 +114,16 @@ def compute_stats(
     s.loc['Exposure Time [%]'] = have_position.mean() * 100  # In "n bars" time, not index time
     s.loc['Equity Final [$]'] = equity[-1]
     s.loc['Equity Peak [$]'] = equity.max()
+
+    if commissions:
+        s.loc['Commissions [$]'] = commissions
+        
+    if margin_interests:
+        s.loc['Margin Interest [$]'] = margin_interests
+        
+    if volume:
+        s.loc['Volume [$]'] = volume
+
     s.loc['Return [%]'] = (equity[-1] - equity[0]) / equity[0] * 100
     c = ohlc_data.Close.values
     s.loc['Buy & Hold Return [%]'] = (c[-1] - c[0]) / c[0] * 100  # long-only return
