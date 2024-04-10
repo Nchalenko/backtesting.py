@@ -1650,11 +1650,11 @@ class Backtest:
                     if os.name == 'posix':
                         warnings.warn("For multiprocessing support in `Backtest.optimize()` "
                                       "set multiprocessing start method to 'fork'.")
-                    for batch_index in tqdm(range(len(param_batches))):
+                    for batch_index, batch in tqdm(param_batches.items()):
                         # TODO add implementation for persistence_key cache storage
                         # Warning will not work properly with persistence_key not None
                         _, values = Backtest._mp_task(backtest_uuid, batch_index)
-                        for value, params in zip(values, param_batches[batch_index]):
+                        for value, params in zip(values, batch):
                             heatmap[tuple(params.values())] = value
 
                 if persistence_key is not None:
