@@ -18,6 +18,9 @@ from math import copysign
 from numbers import Number
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
 
+from tqdm import tqdm
+
+
 import numpy as np
 import pandas as pd
 from numpy.random import default_rng
@@ -49,13 +52,16 @@ class Strategy(metaclass=ABCMeta):
     `backtesting.backtesting.Strategy.init` and
     `backtesting.backtesting.Strategy.next` to define
     your own strategy.
+
+    **kwargs in this case is a list of params for an AbstractStrategy class, could be reworked
     """
 
-    def __init__(self, broker, data, params):
+    def __init__(self, broker, data, market_depth_data=None, **kwargs):
         self._indicators = []
         self._broker: _Broker = broker
         self._data: _Data = data
-        self._params = self._check_params(params)
+        self._market_depth_data: _MarketDepthData = market_depth_data
+        self._params = self._check_params(kwargs)
 
     def __repr__(self):
         return '<Strategy ' + str(self) + '>'
@@ -227,6 +233,10 @@ class Strategy(metaclass=ABCMeta):
           as a **DataFrame**, use `.df` accessor (i.e. `data.df`).
         """
         return self._data
+
+    @property
+    def market_depth_data(self) -> _MarketDepthData:
+        return self._market_depth_data
 
     @property
     def position(self) -> 'Position':
@@ -1201,10 +1211,12 @@ class Backtest:
             market_depth_data = _MarketDepthData(self._market_depth_data.copy(deep=False))
 
         broker: _Broker = self._broker(data=data, market_depth_data=market_depth_data)
-        strategy: Strategy = self._strategy(broker, data, kwargs)
+        strategy: Strategy = self._strategy(broker, data, market_depth_data=market_depth_data, **kwargs)
 
         strategy.init()
         data._update()  # Strategy.init might have changed/added to data.df
+        if market_depth_data:
+            market_depth_data._update()
 
         # Indicators used in Strategy.next()
         indicator_attrs = {attr: indicator
@@ -1413,6 +1425,8 @@ class Backtest:
                 warnings.warn(f'Searching for best of {len(param_combos)} configurations.',
                               stacklevel=2)
 
+            print(f"Running {len(param_combos)} backtest{'s' if len(param_combos) > 1 else ''}...")
+
             heatmap = pd.Series(np.nan,
                                 name=maximize_key,
                                 index=pd.MultiIndex.from_tuples(
@@ -1431,6 +1445,7 @@ class Backtest:
             backtest_uuid = np.random.random()
             param_batches = list(_batch(param_combos))
             Backtest._mp_backtests[backtest_uuid] = (self, param_batches, maximize)  # type: ignore
+
             try:
                 # If multiprocessing start method is 'fork' (i.e. on POSIX), use
                 # a pool of processes to compute results in parallel.
@@ -1439,8 +1454,8 @@ class Backtest:
                     with ProcessPoolExecutor() as executor:
                         futures = [executor.submit(Backtest._mp_task, backtest_uuid, i)
                                    for i in range(len(param_batches))]
-                        for future in _tqdm(as_completed(futures), total=len(futures),
-                                            desc='Backtest.optimize'):
+
+                        for future in tqdm(as_completed(futures), total=len(futures), desc='Backtest.optimize'):
                             batch_index, values = future.result()
                             for value, params in zip(values, param_batches[batch_index]):
                                 heatmap[tuple(params.values())] = value
@@ -1448,7 +1463,7 @@ class Backtest:
                     if os.name == 'posix':
                         warnings.warn("For multiprocessing support in `Backtest.optimize()` "
                                       "set multiprocessing start method to 'fork'.")
-                    for batch_index in _tqdm(range(len(param_batches))):
+                    for batch_index in tqdm(range(len(param_batches))):
                         _, values = Backtest._mp_task(backtest_uuid, batch_index)
                         for value, params in zip(values, param_batches[batch_index]):
                             heatmap[tuple(params.values())] = value
