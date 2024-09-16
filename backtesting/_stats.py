@@ -1,4 +1,4 @@
-from typing import List, TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, List, Union
 
 import numpy as np
 import pandas as pd
@@ -63,7 +63,8 @@ def compute_stats(
         index=index)
 
     if isinstance(trades, pd.DataFrame):
-        trades_df = trades
+        trades_df: pd.DataFrame = trades
+        commissions = None  # Not shown
     else:
         # Came straight from Backtest.run()
         trades_df = pd.DataFrame({
@@ -72,6 +73,8 @@ def compute_stats(
             'ExitBar': [t.exit_bar for t in trades],
             'EntryPrice': [t.entry_price for t in trades],
             'ExitPrice': [t.exit_price for t in trades],
+            'Commissions': [t._commissions for t in trades],
+            'MarginInterest': [t._margin_interest for t in trades],
             'PnL': [t.pl for t in trades],
             'ReturnPct': [t.pl_pct for t in trades],
             'EntryTime': [t.entry_time for t in trades],
@@ -80,8 +83,13 @@ def compute_stats(
             'TP': [t.tp for t in trades],
             'open_indicator': [t.open_indicator for t in trades],
             'close_indicator': [t.close_indicator for t in trades],
+            'Tag': [t.tag for t in trades],
         })
         trades_df['Duration'] = trades_df['ExitTime'] - trades_df['EntryTime']
+        commissions = sum(t._commissions for t in trades)
+        margin_interests = sum(t._margin_interest for t in trades)
+        volume = sum(t.entry_price * abs(t.size) for t in trades)
+
     del trades
 
     pl = trades_df['PnL']
@@ -106,6 +114,16 @@ def compute_stats(
     s.loc['Exposure Time [%]'] = have_position.mean() * 100  # In "n bars" time, not index time
     s.loc['Equity Final [$]'] = equity[-1]
     s.loc['Equity Peak [$]'] = equity.max()
+
+    if commissions:
+        s.loc['Commissions [$]'] = commissions
+        
+    if margin_interests:
+        s.loc['Margin Interest [$]'] = margin_interests
+        
+    if volume:
+        s.loc['Volume [$]'] = volume
+
     s.loc['Return [%]'] = (equity[-1] - equity[0]) / equity[0] * 100
     c = ohlc_data.Close.values
     s.loc['Buy & Hold Return [%]'] = (c[-1] - c[0]) / c[0] * 100  # long-only return
@@ -132,17 +150,18 @@ def compute_stats(
 
     # Our Sharpe mismatches `empyrical.sharpe_ratio()` because they use arithmetic mean return
     # and simple standard deviation
-    s.loc['Sharpe Ratio'] = np.clip((s.loc['Return (Ann.) [%]'] - risk_free_rate) / (s.loc['Volatility (Ann.) [%]'] or np.nan), 0, np.inf)  # noqa: E501
+    s.loc['Sharpe Ratio'] = (s.loc['Return (Ann.) [%]'] - risk_free_rate) / (s.loc['Volatility (Ann.) [%]'] or np.nan)  # noqa: E501
     # Our Sortino mismatches `empyrical.sortino_ratio()` because they use arithmetic mean return
-    s.loc['Sortino Ratio'] = np.clip((annualized_return - risk_free_rate) / (np.sqrt(np.mean(day_returns.clip(-np.inf, 0)**2)) * np.sqrt(annual_trading_days)), 0, np.inf)  # noqa: E501
+    s.loc['Sortino Ratio'] = (annualized_return - risk_free_rate) / (np.sqrt(np.mean(day_returns.clip(-np.inf, 0)**2)) * np.sqrt(annual_trading_days))  # noqa: E501
     max_dd = -np.nan_to_num(dd.max())
-    s.loc['Calmar Ratio'] = np.clip(annualized_return / (-max_dd or np.nan), 0, np.inf)
+    s.loc['Calmar Ratio'] = annualized_return / (-max_dd or np.nan)
     s.loc['Max. Drawdown [%]'] = max_dd * 100
     s.loc['Avg. Drawdown [%]'] = -dd_peaks.mean() * 100
     s.loc['Max. Drawdown Duration'] = _round_timedelta(dd_dur.max())
     s.loc['Avg. Drawdown Duration'] = _round_timedelta(dd_dur.mean())
     s.loc['# Trades'] = n_trades = len(trades_df)
-    s.loc['Win Rate [%]'] = np.nan if not n_trades else (pl > 0).sum() / n_trades * 100  # noqa: E501
+    win_rate = np.nan if not n_trades else (pl > 0).mean()
+    s.loc['Win Rate [%]'] = win_rate * 100
     s.loc['Best Trade [%]'] = returns.max() * 100
     s.loc['Worst Trade [%]'] = returns.min() * 100
     mean_return = geometric_mean(returns)
@@ -152,6 +171,7 @@ def compute_stats(
     s.loc['Profit Factor'] = returns[returns > 0].sum() / (abs(returns[returns < 0].sum()) or np.nan)  # noqa: E501
     s.loc['Expectancy [%]'] = returns.mean() * 100
     s.loc['SQN'] = np.sqrt(n_trades) * pl.mean() / (pl.std() or np.nan)
+    s.loc['Kelly Criterion'] = win_rate - (1 - win_rate) / (pl[pl > 0].mean() / -pl[pl < 0].mean())
 
     s.loc['_strategy'] = strategy_instance
     s.loc['_equity_curve'] = equity_df

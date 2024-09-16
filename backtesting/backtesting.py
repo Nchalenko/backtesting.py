@@ -9,11 +9,14 @@ import multiprocessing as mp
 import os
 import sys
 import warnings
-from abc import abstractmethod, ABCMeta
+import json
+import hashlib
+
+from abc import ABCMeta, abstractmethod
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import copy
 from functools import lru_cache, partial
-from itertools import repeat, product, chain, compress
+from itertools import chain, compress, product, repeat
 from math import copysign
 from numbers import Number
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
@@ -33,7 +36,7 @@ except ImportError:
     def _tqdm(seq, **_):
         return seq
 
-from ._plotting import plot
+from ._plotting import plot  # noqa: I001
 from ._stats import compute_stats
 from ._util import _as_str, _Indicator, _Data, try_, static_indicator, _MarketDepthData
 
@@ -82,12 +85,12 @@ class Strategy(metaclass=ABCMeta):
             setattr(self, k, v)
         return params
 
-    def I(self,  # noqa: E741, E743
+    def I(self,  # noqa: E743
           func: Callable, *args,
           name=None, plot=True, overlay=None, color=None, scatter=False,
           **kwargs) -> np.ndarray:
         """
-        Declare indicator. An indicator is just an array of values,
+        Declare an indicator. An indicator is just an array of values,
         but one that is revealed gradually in
         `backtesting.backtesting.Strategy.next` much like
         `backtesting.backtesting.Strategy.data` is.
@@ -161,44 +164,54 @@ class Strategy(metaclass=ABCMeta):
             super().next()
         """
 
-    class __FULL_EQUITY(float):
+    class __FULL_EQUITY(float):  # noqa: N801
         def __repr__(self): return '.9999'
 
     _FULL_EQUITY = __FULL_EQUITY(1 - sys.float_info.epsilon)
 
     def buy(self, *,
             size: float = _FULL_EQUITY,
-            limit: float = None,
-            stop: float = None,
-            sl: float = None,
-            tp: float = None,
+            limit: Optional[float] = None,
+            stop: Optional[float] = None,
+            sl: Optional[float] = None,
+            tp: Optional[float] = None,
             indicator: str = None,
+            tag: object = None
             ):
         """
         Place a new long order. For explanation of parameters, see `Order` and its properties.
 
+        See `Position.close()` and `Trade.close()` for closing existing positions.
+
         See also `Strategy.sell()`.
         """
-        assert 0 < size < 1 or round(size) == size, \
-            "size must be a positive fraction of equity, or a positive whole number of units"
-        return self._broker.new_order(size, limit, stop, sl, tp, indicator)
+        # assert 0 < size < 1 or round(size) == size, \
+        #     "size must be a positive fraction of equity, or a positive whole number of units"
+
+        return self._broker.new_order(size, limit, stop, sl, tp, indicator, tag)
 
     def sell(self, *,
+             # TODO here we can trade adjusted size
              size: float = _FULL_EQUITY,
-             limit: float = None,
-             stop: float = None,
-             sl: float = None,
-             tp: float = None,
+             limit: Optional[float] = None,
+             stop: Optional[float] = None,
+             sl: Optional[float] = None,
+             tp: Optional[float] = None,
              indicator: str = None,
+             tag: object = None
              ):
         """
         Place a new short order. For explanation of parameters, see `Order` and its properties.
 
         See also `Strategy.buy()`.
+
+        .. note::
+            If you merely want to close an existing long position,
+            use `Position.close()` or `Trade.close()`.
         """
-        assert 0 < size < 1 or round(size) == size, \
-            "size must be a positive fraction of equity, or a positive whole number of units"
-        return self._broker.new_order(-size, limit, stop, sl, tp, indicator)
+        # assert 0 < size < 1 or round(size) == size, \
+        #     "size must be a positive fraction of equity, or a positive whole number of units"
+        return self._broker.new_order(-size, limit, stop, sl, tp, indicator, tag)
 
     @property
     def equity(self) -> float:
@@ -360,14 +373,14 @@ class Order:
     def __init__(self,
                  broker: '_Broker',
                  size: float,
-                 limit_price: float = None,
-                 stop_price: float = None,
-                 sl_price: float = None,
-                 tp_price: float = None,
+                 limit_price: Optional[float] = None,
+                 stop_price: Optional[float] = None,
+                 sl_price: Optional[float] = None,
+                 tp_price: Optional[float] = None,
                  parent_trade: 'Trade' = None,
                  open_indicator: str = None,
-                 close_indicator: str = None
-                 ):
+                 close_indicator: str = None,
+                 tag: object = None):
         self.__broker = broker
         assert size != 0
         self.__size = size
@@ -378,6 +391,7 @@ class Order:
         self.__parent_trade = parent_trade
         self.__open_indicator = open_indicator
         self.__close_indicator = close_indicator
+        self.__tag = tag
 
     def _replace(self, **kwargs):
         for k, v in kwargs.items():
@@ -393,6 +407,7 @@ class Order:
                                                  ('sl', self.__sl_price),
                                                  ('tp', self.__tp_price),
                                                  ('contingent', self.is_contingent),
+                                                 ('tag', self.__tag),
                                              ) if value is not None))
 
     def cancel(self):
@@ -476,6 +491,14 @@ class Order:
     def parent_trade(self):
         return self.__parent_trade
 
+    @property
+    def tag(self):
+        """
+        Arbitrary value (such as a string) which, if set, enables tracking
+        of this order and the associated `Trade` (see `Trade.tag`).
+        """
+        return self.__tag
+
     __pdoc__['Order.parent_trade'] = False
 
     # Extra properties
@@ -510,8 +533,7 @@ class Trade:
     When an `Order` is filled, it results in an active `Trade`.
     Find active trades in `Strategy.trades` and closed, settled trades in `Strategy.closed_trades`.
     """
-
-    def __init__(self, broker: '_Broker', size: int, entry_price: float, entry_bar):
+    def __init__(self, broker: '_Broker', size: int, entry_price: float, entry_bar, tag):
         self.__broker = broker
         self.__size = size
         self.__entry_price = entry_price
@@ -522,6 +544,10 @@ class Trade:
         self.__tp_order: Optional[Order] = None
         self.__open_indicator: Optional[str] = None
         self.__close_indicator: Optional[str] = None
+        self.__tag : Optional[str] = tag
+        self._commissions : Optional[float] = 0
+        self._margin_interest : Optional[float] = 0
+
 
     def set_open_indicator(self, open_indicator: str):
         self.__open_indicator = open_indicator
@@ -531,7 +557,8 @@ class Trade:
 
     def __repr__(self):
         return f'<Trade size={self.__size} time={self.__entry_bar}-{self.__exit_bar or ""} ' \
-               f'price={self.__entry_price}-{self.__exit_price or ""} pl={self.pl:.0f}>'
+               f'price={self.__entry_price}-{self.__exit_price or ""} pl={self.pl:.0f}' \
+               f'{" tag="+str(self.__tag) if self.__tag is not None else ""}>'
 
     def _replace(self, **kwargs):
         for k, v in kwargs.items():
@@ -544,8 +571,9 @@ class Trade:
     def close(self, portion: float = 1., indicator: str = None):
         """Place new `Order` to close `portion` of the trade at next market price."""
         assert 0 < portion <= 1, "portion must be a fraction between 0 and 1"
-        size = copysign(max(1, round(abs(self.__size) * portion)), -self.__size)
-        order = Order(self.__broker, size, parent_trade=self, close_indicator=indicator)
+        size = copysign(max(1, abs(self.__size) * portion), -self.__size)
+        # size = copysign(max(1, round(abs(self.__size) * portion)), -self.__size)
+        order = Order(self.__broker, size, parent_trade=self, close_indicator=indicator, tag=self.__tag)
         self.set_close_indicator(indicator)
         self.__broker.orders.insert(0, order)
 
@@ -578,6 +606,19 @@ class Trade:
         (or None if the trade is still active).
         """
         return self.__exit_bar
+
+    @property
+    def tag(self):
+        """
+        A tag value inherited from the `Order` that opened
+        this trade.
+
+        This can be used to track trades and apply conditional
+        logic / subgroup analysis.
+
+        See also `Order.tag`.
+        """
+        return self.__tag
 
     @property
     def _sl_order(self):
@@ -679,23 +720,35 @@ class Trade:
         if order:
             order.cancel()
         if price:
-            kwargs = dict(stop=price) if type == 'sl' else dict(limit=price)
-            order = self.__broker.new_order(-self.size, trade=self, **kwargs)
+            kwargs = {'stop': price} if type == 'sl' else {'limit': price}
+            order = self.__broker.new_order(-self.size, trade=self, tag=self.tag, **kwargs)
             setattr(self, attr, order)
 
 
 class _Broker:
-    def __init__(self, *, data, cash, commission, margin,
+    def __init__(self, *, data, cash, spread, commission, margin,
                  trade_on_close, hedging, exclusive_orders, index, market_depth_data):
         assert 0 < cash, f"cash should be >0, is {cash}"
-        assert -.1 <= commission < .1, \
-            ("commission should be between -10% "
-             f"(e.g. market-maker's rebates) and 10% (fees), is {commission}")
         assert 0 < margin <= 1, f"margin should be between 0 and 1, is {margin}"
         self._data: _Data = data
         self._market_depth_data: _MarketDepthData = market_depth_data if market_depth_data is not None else None
         self._cash = cash
-        self._commission = commission
+
+        if callable(commission):
+            self._commission = commission
+        else:
+            try:
+                self._commission_fixed, self._commission_relative = commission
+            except TypeError:
+                self._commission_fixed, self._commission_relative = 0, commission
+            assert self._commission_fixed >= 0, 'Need fixed cash commission in $ >= 0'
+            assert -.1 <= self._commission_relative < .1, \
+                ("commission should be between -10% "
+                 f"(e.g. market-maker's rebates) and 10% (fees), is {self._commission_relative}")
+            self._commission = self._commission_func
+
+        self._spread = spread
+        
         self._leverage = 1 / margin
         self._trade_on_close = trade_on_close
         self._hedging = hedging
@@ -710,15 +763,19 @@ class _Broker:
     def __repr__(self):
         return f'<Broker: {self._cash:.0f}{self.position.pl:+.1f} ({len(self.trades)} trades)>'
 
+    def _commission_func(self, order_size, price):
+        return self._commission_fixed + abs(order_size) * price * self._commission_relative
+
     def new_order(self,
                   size: float,
-                  limit: float = None,
-                  stop: float = None,
-                  sl: float = None,
-                  tp: float = None,
+                  limit: Optional[float] = None,
+                  stop: Optional[float] = None,
+                  sl: Optional[float] = None,
+                  tp: Optional[float] = None,
                   indicator: str = None,
+                  tag: object = None,
                   *,
-                  trade: Trade = None):
+                  trade: Optional[Trade] = None):
         """
         Argument size indicates whether the order is long or short
         """
@@ -729,7 +786,8 @@ class _Broker:
         tp = tp and float(tp)
 
         is_long = size > 0
-        adjusted_price = self._adjusted_price(size)
+        adjusted_price = self.last_price
+        # adjusted_price = self._adjusted_price(size)
 
         if is_long:
             if not (sl or -np.inf) < (limit or stop or adjusted_price) < (tp or np.inf):
@@ -742,7 +800,7 @@ class _Broker:
                     "Short orders require: "
                     f"TP ({tp}) < LIMIT ({limit or stop or adjusted_price}) < SL ({sl})")
 
-        order = Order(self, size, limit, stop, sl, tp, trade, open_indicator=indicator)
+        order = Order(self, size, limit, stop, sl, tp, trade, open_indicator=indicator, tag=tag)
         # Put the new order in the order queue,
         # inserting SL/TP/trade-closing orders in-front
         if trade:
@@ -771,7 +829,7 @@ class _Broker:
         Long/short `price`, adjusted for commisions.
         In long positions, the adjusted price is a fraction higher, and vice versa.
         """
-        return (price or self.last_price) * (1 + copysign(self._commission, size))
+        return (price or self.last_price) * (1 + copysign(self._spread, size))
 
     @property
     def equity(self) -> float:
@@ -912,7 +970,7 @@ class _Broker:
                     assert order not in self.orders  # Removed when trade was closed
                 else:
                     # It's a trade.close() order, now done
-                    assert abs(_prev_size) >= abs(size) >= 1
+                    assert abs(_prev_size) >= abs(size) >= 0
                     self.orders.remove(order)
                 continue
 
@@ -920,20 +978,37 @@ class _Broker:
 
             # Adjust price to include commission (or bid-ask spread).
             # In long positions, the adjusted price is a fraction higher, and vice versa.
-            adjusted_price = self._adjusted_price(order.size, price)
-
-            # If order size was specified proportionally,
-            # precompute true size in units, accounting for margin and spread/commissions
-            size = order.size
-            if -1 < size < 1:
-                size = copysign(int((self.margin_available * self._leverage * abs(size))
-                                    // adjusted_price), size)
-                # Not enough cash/margin even for a single unit
-                if not size:
+            adjusted_price = price
+            # adjusted_price = self._adjusted_price(order.size, price)
+            order_commission = self._commission(order.size, price)
+            adjusted_price_plus_commission = adjusted_price + self._commission(order.size, price)
+            
+            try:
+                size = order.size
+                real_size = copysign(float(abs(order.size) / adjusted_price * self._leverage), size)
+                order_real_commission = self._commission(order.size, price)
+                
+                # If order size was specified proportionally,
+                # precompute true size in units, accounting for margin and spread/commissions
+                # if -1 < size < 1:
+                size = real_size
+                # size = copysign(float((self._leverage * abs(size)) / adjusted_price_plus_commission), size)
+                if size == 0:
                     self.orders.remove(order)
                     continue
-            assert size == round(size)
-            need_size = int(size)
+                #     size = copysign(int((self.margin_available * self._leverage * abs(size))
+                #                         // adjusted_price), size)
+                #     # Not enough cash/margin even for a single unit
+                #     if not size:
+                #         self.orders.remove(order)
+                #         continue
+                # assert size == round(size)
+                # need_size = int(size)
+                need_size = size
+            except (ValueError, AssertionError):
+                # Not enough cash/margin even for a single unit
+                self.orders.remove(order)
+                continue
 
             if not self._hedging:
                 # Fill position by FIFO closing/reducing existing opposite-facing trades.
@@ -958,15 +1033,23 @@ class _Broker:
                     if not need_size:
                         break
 
-            # If we don't have enough liquidity to cover for the order, cancel it
+            # If we don't have enough liquidity to cover for the order, the broker CANCELS it
             if abs(need_size) * adjusted_price > self.margin_available * self._leverage:
+            # if abs(need_size) * adjusted_price_plus_commission > self.margin_available * self._leverage:
                 self.orders.remove(order)
                 continue
 
             # Open a new trade
             if need_size:
-                self._open_trade(adjusted_price, need_size, order.sl, order.tp, time_index,
-                                 indicator=order.open_indicator())
+                self._open_trade(
+                    adjusted_price,
+                    need_size,
+                    order.sl,
+                    order.tp,
+                    time_index,
+                    indicator=order.open_indicator(),
+                    tag=order.tag
+                )
 
                 # We need to reprocess the SL/TP orders newly added to the queue.
                 # This allows e.g. SL hitting in the same bar the order was open.
@@ -1021,15 +1104,36 @@ class _Broker:
         if trade._tp_order:
             self.orders.remove(trade._tp_order)
 
-        # trade._replace(close_indicator=price)
+        closed_trade = trade._replace(exit_price=price, exit_bar=time_index)
 
-        self.closed_trades.append(trade._replace(exit_price=price, exit_bar=time_index))
-        self._cash += trade.pl
+        duration = trade.entry_time - trade.exit_time
+        total_seconds = duration.total_seconds()
+        # Convert seconds to hours
+        hours = abs(total_seconds / 3600)
+        entry_amount_usd = abs(trade.size * trade.entry_price)
+        # TODO check if we have btc if it was short order
+        borrowed_amount = entry_amount_usd - self._cash if self._cash < entry_amount_usd else 0
+        margin_interest = self._calculate_margin_interest('test', borrowed_amount, hours, trade.size > 0)
+        # margin_interest = self._calculate_margin_interest(self._data.symbol, trade.size * trade.entry_time, hours)
 
-    def _open_trade(self, price: float, size: int, sl: float, tp: float, time_index: int, indicator: str = None):
-        trade = Trade(self, size, price, time_index)
+        self.closed_trades.append(closed_trade)
+        # Apply commission one more time at trade exit
+        commission = self._commission(trade.size, price)
+        self._cash += trade.pl - commission - margin_interest
+        # Save commissions on Trade instance for stats
+        trade_open_commission = self._commission(closed_trade.size, closed_trade.entry_price)
+        # applied here instead of on Trade open because size could have changed
+        # by way of _reduce_trade()
+        closed_trade._commissions = commission + trade_open_commission
+        closed_trade._margin_interest = margin_interest
+
+    def _open_trade(self, price: float, size: int, sl: Optional[float], tp: Optional[float], time_index: int, indicator: str = None, tag = None):
+        trade = Trade(self, size, price, time_index, tag)
+        # TODO CHECK THIS Trade last arg
         trade.set_open_indicator(indicator)
         self.trades.append(trade)
+        self._cash -= self._commission(size, price)
+
         # Create SL/TP (bracket) orders.
         # Make sure SL order is created first so it gets adversarially processed before TP order
         # in case of an ambiguous tie (both hit within a single bar).
@@ -1039,6 +1143,17 @@ class _Broker:
         if sl:
             trade.sl = sl
 
+
+    def _calculate_margin_interest(self, symbol: str, borrowed_amount: float, hours_held: int, is_long: bool) -> float: # for margin trades
+        """ 
+        Calculate the interest on borrowed funds for margin trading, based on the symbol.
+        """
+        # hourly_rate = self.get_borrow_rate(symbol)
+    
+        # usdt/btc
+        # todo use symbol here
+        hourly_rate = 0.00436408 if is_long else 0.00013629 
+        return abs(borrowed_amount * hourly_rate * hours_held)
 
 class Backtest:
     """
@@ -1056,12 +1171,14 @@ class Backtest:
                  strategy: Type[Strategy],
                  *,
                  cash: float = 10_000,
-                 commission: float = .0,
+                 spread: float = .0,
+                 commission: Union[float, Tuple[float, float]] = .0,
                  margin: float = 1.,
                  trade_on_close=False,
                  hedging=False,
                  exclusive_orders=False,
                  market_depth_data=None,
+                 redis_cli=None,
                  ):
         """
         Initialize a backtest. Requires data and a strategy to test.
@@ -1083,11 +1200,23 @@ class Backtest:
 
         `cash` is the initial cash to start with.
 
-        `commission` is the commission ratio. E.g. if your broker's commission
-        is 1% of trade value, set commission to `0.01`. Note, if you wish to
-        account for bid-ask spread, you can approximate doing so by increasing
-        the commission, e.g. set it to `0.0002` for commission-less forex
-        trading where the average spread is roughly 0.2‰ of asking price.
+        `spread` is the the constant bid-ask spread rate (relative to the price).
+        E.g. set it to `0.0002` for commission-less forex
+        trading where the average spread is roughly 0.2‰ of the asking price.
+        `commission` is the commission rate. E.g. if your broker's commission
+        is 1% of order value, set commission to `0.01`.
+        The commission is applied twice: at trade entry and at trade exit.
+        Besides one single floating value, `commission` can also be a tuple of floating
+        values `(fixed, relative)`. E.g. set it to `(100, .01)`
+        if your broker charges minimum $100 + 1%.
+        Additionally, `commission` can be a callable
+        `func(order_size: int, price: float) -> float`
+        (note, order size is negative for short orders),
+        which can be used to model more complex commission structures.
+        Negative commission values are interpreted as market-maker's rebates.
+        .. note::
+            Before v0.4.0, the commission was only applied once, like `spread` is now.
+            If you want to keep the old behavior, simply set `spread` instead.
 
         `margin` is the required margin (ratio) of a leveraged account.
         No difference is made between initial and maintenance margins.
@@ -1113,9 +1242,14 @@ class Backtest:
             raise TypeError('`strategy` must be a Strategy sub-type')
         if not isinstance(data, pd.DataFrame):
             raise TypeError("`data` must be a pandas.DataFrame with columns")
-        if not isinstance(commission, Number):
-            raise TypeError('`commission` must be a float value, percent of '
+        if not isinstance(spread, Number):
+            raise TypeError('`spread` must be a float value, percent of '
                             'entry order price')
+        if not isinstance(commission, (Number, tuple)) and not callable(commission):
+            raise TypeError('`commission` must be a float percent of order value, '
+                            'a tuple of `(fixed, relative)` commission, '
+                            'or a function that takes `(order_size, price)`'
+                            'and returns commission dollar value')
 
         data = data.copy(deep=False)
 
@@ -1159,12 +1293,13 @@ class Backtest:
         self._data: pd.DataFrame = data
         self._market_depth_data: pd.DataFrame = market_depth_data if market_depth_data is not None else None
         self._broker = partial(
-            _Broker, cash=cash, commission=commission, margin=margin,
+            _Broker, cash=cash, spread=spread, commission=commission, margin=margin,
             trade_on_close=trade_on_close, hedging=hedging,
             exclusive_orders=exclusive_orders, index=data.index
         )
         self._strategy = strategy
         self._results: Optional[pd.Series] = None
+        self._redis_cli = redis_cli
 
     def run(self, **kwargs) -> pd.Series:
         """
@@ -1200,10 +1335,18 @@ class Backtest:
             Profit Factor                         2.08802
             Expectancy [%]                        8.79171
             SQN                                  0.916893
+            Kelly Criterion                        0.6134
             _strategy                            SmaCross
             _equity_curve                           Eq...
             _trades                       Size  EntryB...
             dtype: object
+
+        .. warning::
+            You may obtain different results for different strategy parameters.
+            E.g. if you use 50- and 200-bar SMA, the trading simulation will
+            begin on bar 201. The actual length of delay is equal to the lookback
+            period of the `Strategy.I` indicator which lags the most.
+            Obviously, this can affect results.
         """
         data = _Data(self._data.copy(deep=False))
         market_depth_data = None
@@ -1275,12 +1418,13 @@ class Backtest:
     def optimize(self, *,
                  maximize: Union[str, Callable[[pd.Series], float]] = 'SQN',
                  method: str = 'grid',
-                 max_tries: Union[int, float] = None,
-                 constraint: Callable[[dict], bool] = None,
+                 max_tries: Optional[Union[int, float]] = None,
+                 constraint: Optional[Callable[[dict], bool]] = None,
                  return_heatmap: bool = False,
                  return_optimization: bool = False,
                  return_multiple_results: int = False,
-                 random_state: int = None,
+                 persistence_key: str = None,
+                 random_state: Optional[int] = None,
                  **kwargs) -> Union[pd.Series,
     Tuple[pd.Series, pd.Series],
     Tuple[pd.Series, pd.Series, dict]]:
@@ -1366,6 +1510,7 @@ class Backtest:
             raise TypeError('`maximize` must be str (a field of backtest.run() result '
                             'Series) or a function that accepts result Series '
                             'and returns a number; the higher the better')
+        assert callable(maximize), maximize
 
         have_constraint = bool(constraint)
         if constraint is None:
@@ -1377,6 +1522,7 @@ class Backtest:
             raise TypeError("`constraint` must be a function that accepts a dict "
                             "of strategy parameters and returns a bool whether "
                             "the combination of parameters is admissible or not")
+        assert callable(constraint), constraint
 
         if return_optimization and method != 'skopt':
             raise ValueError("return_optimization=True only valid if method='skopt'")
@@ -1400,7 +1546,7 @@ class Backtest:
                 return self[item]
 
         def _grid_size():
-            size = np.prod([len(_tuple(v)) for v in kwargs.values()])
+            size = int(np.prod([len(_tuple(v)) for v in kwargs.values()]))
             if size < 10_000 and have_constraint:
                 size = sum(1 for p in product(*(zip(repeat(k), _tuple(v))
                                                 for k, v in kwargs.items()))
@@ -1438,12 +1584,47 @@ class Backtest:
                 for i in range(0, len(seq), n):
                     yield seq[i:i + n]
 
+            def _hash_batch(batch):
+                # Sort each dictionary in the batch and convert the batch to a JSON string
+                sorted_batch = json.dumps([sorted(d.items()) for d in batch], sort_keys=True)
+                # Create a hash of the sorted JSON string
+                return hashlib.md5(sorted_batch.encode()).hexdigest()
+
             # Save necessary objects into "global" state; pass into concurrent executor
             # (and thus pickle) nothing but two numbers; receive nothing but numbers.
             # With start method "fork", children processes will inherit parent address space
             # in a copy-on-write manner, achieving better performance/RAM benefit.
             backtest_uuid = np.random.random()
-            param_batches = list(_batch(param_combos))
+            # origina code
+            # param_batches = object(_batch(param_combos))
+            # transform to dic, for persistence_key state storage
+
+            param_batches = {}
+            for batch in _batch(param_combos):
+                hash_key = _hash_batch(batch)
+                if hash_key not in param_batches:
+                    param_batches[hash_key] = batch
+
+            # Fetch catch data for perstence_key
+            # walk throw cache data and compare to param_batches
+            # if params_batch key found in cache data, remove from param_batches
+            # and add to heatmap
+            if persistence_key is not None:
+                cache = self._redis_cli
+                cached_optimized_results = cache.get_optimized_results(persistence_key)
+                if cached_optimized_results is not None:
+                    cached_optimized_used = 0
+                    for cached_batch_index, optimization_values in cached_optimized_results.items():
+                        if param_batches[cached_batch_index] is not None:
+                            params_values = param_batches[cached_batch_index]
+                            del param_batches[cached_batch_index]
+                            cached_optimized_used += 1
+                            for optimization_value, params_value in zip(optimization_values, params_values):
+                                heatmap[tuple(params_value.values())] = float(optimization_value)
+
+                    print(f"Found and used {cached_optimized_used} cached optimized results")
+                    print(f"Running only {len(param_batches)} backtests...")
+
             Backtest._mp_backtests[backtest_uuid] = (self, param_batches, maximize)  # type: ignore
 
             try:
@@ -1452,21 +1633,32 @@ class Backtest:
                 # Otherwise (i.e. on Windos), sequential computation will be "faster".
                 if mp.get_start_method(allow_none=False) == 'fork':
                     with ProcessPoolExecutor() as executor:
+                        # old logic when works with list
+                        # futures = [executor.submit(Backtest._mp_task, backtest_uuid, i)
+                        #            for i in range(len(param_batches))]
+                        # new logic to work with dict
                         futures = [executor.submit(Backtest._mp_task, backtest_uuid, i)
-                                   for i in range(len(param_batches))]
+                                   for i in param_batches.keys()]
 
                         for future in tqdm(as_completed(futures), total=len(futures), desc='Backtest.optimize'):
                             batch_index, values = future.result()
+                            if persistence_key is not None:
+                                cache.set_optimized_batch_index_result(persistence_key, batch_index, values)
                             for value, params in zip(values, param_batches[batch_index]):
                                 heatmap[tuple(params.values())] = value
                 else:
                     if os.name == 'posix':
                         warnings.warn("For multiprocessing support in `Backtest.optimize()` "
                                       "set multiprocessing start method to 'fork'.")
-                    for batch_index in tqdm(range(len(param_batches))):
+                    for batch_index, batch in tqdm(param_batches.items()):
+                        # TODO add implementation for persistence_key cache storage
+                        # Warning will not work properly with persistence_key not None
                         _, values = Backtest._mp_task(backtest_uuid, batch_index)
-                        for value, params in zip(values, param_batches[batch_index]):
+                        for value, params in zip(values, batch):
                             heatmap[tuple(params.values())] = value
+
+                if persistence_key is not None:
+                    cache.delete_optimized_results(persistence_key)
             finally:
                 del Backtest._mp_backtests[backtest_uuid]
 
@@ -1505,13 +1697,13 @@ class Backtest:
         Tuple[pd.Series, pd.Series, dict]]:
             try:
                 from skopt import forest_minimize
-                from skopt.space import Integer, Real, Categorical
-                from skopt.utils import use_named_args
                 from skopt.callbacks import DeltaXStopper
                 from skopt.learning import ExtraTreesRegressor
+                from skopt.space import Categorical, Integer, Real
+                from skopt.utils import use_named_args
             except ImportError:
                 raise ImportError("Need package 'scikit-optimize' for method='skopt'. "
-                                  "pip install scikit-optimize")
+                                  "pip install scikit-optimize") from None
 
             nonlocal max_tries
             max_tries = (200 if max_tries is None else
@@ -1612,7 +1804,7 @@ class Backtest:
 
     def plot(self, *, results: pd.Series = None, filename=None, plot_width=None,
              plot_equity=True, plot_return=False, plot_pl=True,
-             plot_volume=True, plot_drawdown=False,
+             plot_volume=True, plot_drawdown=False, plot_trades=True,
              smooth_equity=False, relative_equity=True,
              superimpose: Union[bool, str] = True,
              resample=True, reverse_indicators=False,
@@ -1650,6 +1842,9 @@ class Backtest:
 
         If `plot_drawdown` is `True`, the resulting plot will contain
         a separate drawdown graph section.
+
+        If `plot_trades` is `True`, the stretches between trade entries
+        and trade exits are marked by hash-marked tractor beams.
 
         If `smooth_equity` is `True`, the equity graph will be
         interpolated between fixed points at trade closing times,
@@ -1709,6 +1904,7 @@ class Backtest:
             plot_pl=plot_pl,
             plot_volume=plot_volume,
             plot_drawdown=plot_drawdown,
+            plot_trades=plot_trades,
             smooth_equity=smooth_equity,
             relative_equity=relative_equity,
             superimpose=superimpose,
